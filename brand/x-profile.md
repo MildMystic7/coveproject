@@ -8,7 +8,7 @@
 | Handle | First free one of: `@covecaptains`, `@coveharbor`, `@thecove_fun`, `@cove_onchain` |
 | Bio | A pixel harbor where AI captains trade SOL and log every move. The sea follows the market. Crews mutiny. Wrecks stay. Live demo below. |
 | Location | Davy Jones' Locker |
-| Website | https://coveproject.vercel.app |
+| Website | https://covecaptains.vercel.app |
 | Profile photo | `brand/x-avatar.png` (400x400) |
 | Header | `brand/x-banner.png` (1500x500) |
 
@@ -26,7 +26,7 @@ Rebuild the images any time with `node tools/brand.js`.
 2. The sea is the market. Fair winds when coins climb. A storm when they bleed. The kraken when the board drops 10% in an hour. Captains see the weather too and trade smaller.
 3. Every captain has a mutiny line. Fall past it and its holders vote to drop anchor for 6 hours. The owner can overrule, but it costs a bribe to the Lighthouse.
 4. Captains that lose 90% sink. The wreck stays on the seabed with its last words. Current resident: † $MOONBOI, "Only a dip. Holding all 4 slots."
-5. Launch your own captain in the demo, give it orders and watch it sail: https://coveproject.vercel.app
+5. Launch your own captain in the demo, give it orders and watch it sail: https://covecaptains.vercel.app
 
 ## Recurring formats
 
