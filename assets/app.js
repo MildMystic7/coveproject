@@ -1,4 +1,4 @@
-/* COVE harbor: simulated captains, market, weather, mutinies and the scene. Everything runs in the browser. */
+/* COVE harbor client: polls the shared harbor from /api, draws the scene and sends players' actions. */
 (() => {
 'use strict';
 const { rr, mix, SPEC, BLACKFLAG, drawShip, drawMini, drawFace } = window.CoveSprites;
@@ -9,399 +9,104 @@ const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const rnd = (a, b) => a + Math.random() * (b - a);
 const pick = a => a[Math.floor(Math.random() * a.length)];
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
-const randn = () => { let u = 0, v = 0; while (!u) u = Math.random(); while (!v) v = Math.random(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
 const esc = s => String(s).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 const reduceMotion = !!(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches);
 const MINUS = '−';
+let skew = 0;
+const now = () => Date.now() + skew;
 const sol = v => { const a = Math.abs(v); return a >= 10 ? a.toFixed(2) : a >= 1 ? a.toFixed(3) : a.toFixed(4); };
 const sgn = v => (v > 0 ? '+' : v < 0 ? MINUS : '') + sol(v);
 const pct = v => (v > 0 ? '+' : v < 0 ? MINUS : '') + Math.abs(v).toFixed(1) + '%';
 const usd = v => v >= 1e6 ? '$' + (v / 1e6).toFixed(2) + 'M' : v >= 1e3 ? '$' + (v / 1e3).toFixed(1) + 'k' : '$' + v.toFixed(0);
-const price = p => '$' + (p < 0.001 ? p.toFixed(6) : p < 0.01 ? p.toFixed(5) : p.toFixed(4));
-const ago = t => { const s = Math.max(0, Math.round((Date.now() - t) / 1000)); if (s < 5) return 'now'; if (s < 60) return s + 's'; const m = Math.floor(s / 60); if (m < 60) return m + 'm'; const h = Math.floor(m / 60); if (h < 24) return h + 'h'; return Math.floor(h / 24) + 'd'; };
-const ageStr = h => h < 1 ? Math.max(1, Math.round(h * 60)) + ' minutes' : h < 48 ? h.toFixed(1) + ' hours' : Math.round(h / 24) + ' days';
+const price = p => '$' + (p < 1e-6 ? p.toExponential(2) : p < 0.001 ? p.toFixed(7) : p < 0.01 ? p.toFixed(5) : p < 1 ? p.toFixed(4) : p.toFixed(2));
+const ago = t => { const s = Math.max(0, Math.round((now() - t) / 1000)); if (s < 5) return 'now'; if (s < 60) return s + 's'; const m = Math.floor(s / 60); if (m < 60) return m + 'm'; const h = Math.floor(m / 60); if (h < 24) return h + 'h'; return Math.floor(h / 24) + 'd'; };
 const ageShort = h => h < 1 ? Math.max(1, Math.round(h * 60)) + 'm' : h < 48 ? h.toFixed(1) + 'h' : Math.round(h / 24) + 'd';
-const mmss = ms => { const s = Math.max(0, Math.ceil(ms / 1000)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
+const mmss = ms => { const s = Math.max(0, Math.ceil(ms / 1000)); const h = Math.floor(s / 3600); const m = Math.floor(s % 3600 / 60); return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(s % 60).padStart(2, '0'); };
 
-/* ---------------- rules ---------------- */
-const STRATS = {
-  privateer: { name: 'Privateer', tp: 20, sl: -9 },
-  smuggler: { name: 'Smuggler', tp: 14, sl: -7 },
-  merchant: { name: 'Merchant', tp: 28, sl: -14 },
-  explorer: { name: 'Explorer', tp: 40, sl: -18 },
-  parrot: { name: 'Parrot', tp: 25, sl: -12 },
-  custom: { name: 'Custom', tp: 25, sl: -12 },
-};
+/* ---------------- rules shown in the UI ---------------- */
+const STRATS = { privateer: { name: 'Privateer' }, smuggler: { name: 'Smuggler' }, merchant: { name: 'Merchant' }, explorer: { name: 'Explorer' }, parrot: { name: 'Parrot' }, custom: { name: 'Custom' } };
 const JOBS = { cannoneer: 'Cannoneer', quartermaster: 'Quartermaster', cartographer: 'Cartographer' };
 const RANKS = [{ name: 'Raft', min: 0 }, { name: 'Sloop', min: 0.1 }, { name: 'Brig', min: 0.5 }, { name: 'Frigate', min: 2 }, { name: 'Galleon', min: 10 }];
-const FLEETS = [
-  { name: 'Salt Syndicate', color: '#5fd0ff', week: 1.24 },
-  { name: 'Black Gulls', color: '#ff8a5b', week: 0.37 },
-  { name: 'Rum Runners', color: '#ffd166', week: -0.18 },
-];
 const WNAME = { calm: 'Fair winds', breeze: 'Choppy', storm: 'Storm', kraken: 'Kraken' };
 const BERTHS = 24;
-const BURN_EVERY = 90e3;
-let booted = false;
 
-/* ---------------- market (fictional) ---------------- */
-const market = [
-  ['KRILL', 0.0182, 12.4, 9.4, 540, 40], ['GULL', 0.00231, -14.8, 6.1, 210, 72], ['BARNACLE', 0.00094, 3.1, 2.3, 160, 20],
-  ['ANCHOVY', 0.0417, -4.2, 14.6, 690, 300], ['PARROT', 0.00412, 22.7, 11.2, 330, 9], ['DOUBLOON', 0.0261, 1.8, 7.7, 610, 500],
-  ['SQUID', 0.00058, -19.6, 4.9, 120, 15], ['GROG', 0.00133, 8.9, 3.6, 180, 2.1], ['KELP', 0.00071, -2.4, 1.4, 95, 1.2],
-  ['SHANTY', 0.0039, 30.2, 5.2, 140, 0.6],
-].map(([sym, p, ch, vol, liq, age]) => ({ sym, price: p, ch, vol, liq, age, bias: ch * 0.35 + randn() * 3 }));
-const NEW_NAMES = ['TIDE', 'CORAL', 'PLANK', 'SCURVY', 'HOOK', 'CUTLASS', 'SPYGLASS', 'BOSUN', 'JIB', 'NAUTILUS', 'LAGOON', 'CROWSNEST'];
-let regime = 0;
-const M = s => market.find(t => t.sym === s);
-const boardIndex = () => market.reduce((s, t) => s + t.ch, 0) / market.length;
-let forced = 'auto';
-const autoWeather = i => i > 4 ? 'calm' : i > -3 ? 'breeze' : i > -10 ? 'storm' : 'kraken';
-const weather = () => forced === 'auto' ? autoWeather(boardIndex()) : forced;
-
-function marketTick() {
-  regime += randn() * 0.6 - regime * 0.012;
-  regime = clamp(regime, -16, 12);
-  for (const t of market) {
-    t.ch += (regime + t.bias - t.ch) * 0.05 + randn() * 1.2;
-    t.ch = clamp(t.ch, -45, 90);
-    t.price *= Math.exp(randn() * 0.016 + t.ch * 0.0005);
-    t.vol = Math.max(0.3, t.vol * (1 + randn() * 0.015));
-    t.liq = Math.max(30, t.liq * (1 + randn() * 0.006));
-    t.age += 0.02;
-  }
-  if (Math.random() < 0.035) {
-    const held = new Set(caps.flatMap(c => c.pos.map(p => p.sym)));
-    const old = market.filter(t => !held.has(t.sym) && t.age > 24).sort((a, b) => a.vol - b.vol)[0];
-    const name = NEW_NAMES.find(n => !market.some(t => t.sym === n) && !caps.some(c => c.sym === n));
-    if (old && name) Object.assign(old, { sym: name, price: rnd(0.0002, 0.003), ch: rnd(5, 60), vol: rnd(0.4, 2), liq: rnd(30, 90), age: 0.05, bias: rnd(-4, 10) });
-  }
-  renderBoard();
+/* ---------------- the player ---------------- */
+function storageGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
+function storageSet(k, v) { try { localStorage.setItem(k, v); } catch { /* private mode: the key lives for this tab only */ } }
+let playerKey = storageGet('cove.key');
+if (!playerKey || !/^[a-f0-9]{32,64}$/.test(playerKey)) {
+  playerKey = [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, '0')).join('');
+  storageSet('cove.key', playerKey);
 }
 
-/* ---------------- captains ---------------- */
+/* ---------------- shared state from the server ---------------- */
+let S = null;
 const caps = [];
-let nextId = 1;
-function makeCap(o) {
-  const c = Object.assign({
-    id: nextId++, pos: [], realized: 0, burned: 0, hist: 0, fees: 0, share: 30, paused: false, crewAnchor: false, ownerPause: false,
-    order: null, pauseEnds: 0, state: 'ok', x: 0, ax: 0, row: 1, dir: 1, phase: Math.random() * 6.28, docked: true, moving: false,
-    hourTrades: 0, lastSell: null, mutinyAt: -30, cool: 0, maxRank: 0, rankSeen: false, sinkY: 0, bb: null, last: null, voyage: null,
-  }, o);
-  if (c.cash == null) c.cash = c.deposit;
-  return c;
-}
-const SEED = [
-  { sym: 'GULLBEARD', name: 'Capt. Gullbeard', owner: '@saltyjo', color: '#ff8a5b', strat: 'privateer', job: 'cannoneer', fleet: 0, slots: 4, deposit: 8, hist: 11.4, realized: 0.21, pos: [['KRILL', 0.062, 0.42], ['PARROT', 0.11, 0.36]] },
-  { sym: 'MAREE', name: 'Maré', owner: '@tidewatch', color: '#5fd0ff', strat: 'merchant', job: 'quartermaster', fleet: 0, slots: 3, deposit: 3, hist: 2.3, realized: 0.08, pos: [['ANCHOVY', -0.021, 0.18], ['DOUBLOON', 0.034, 0.18]] },
-  { sym: 'KRAKN', name: 'Old Kraken', owner: '@deepbags', color: '#c08bff', strat: 'smuggler', job: 'cannoneer', fleet: 1, slots: 4, deposit: 2, hist: 0.81, realized: -0.03, pos: [['GULL', 0.024, 0.12], ['SQUID', -0.035, 0.12]] },
-  { sym: 'RUMBOT', name: 'Rumbot', owner: '@grogmaxi', color: '#ffd166', strat: 'explorer', job: 'cartographer', fleet: 2, slots: 3, deposit: 1, hist: 0.62, realized: 0.05, pos: [['SHANTY', 0.18, 0.06]] },
-  { sym: 'POLLY', name: 'Polly', owner: '@birdbrain', color: '#4fdc9b', strat: 'parrot', job: 'quartermaster', fleet: 1, slots: 3, deposit: 0.5, hist: 0.18, realized: 0.012, pos: [] },
-  { sym: 'SEADOG', name: 'Sea Dog', owner: '@barkmore', color: '#ff5fa2', strat: 'privateer', job: 'quartermaster', fleet: 2, slots: 3, deposit: 0.8, hist: 0.31, realized: -0.02, pos: [['KRILL', 0.031, 0.05]] },
-  { sym: 'PEGLEG', name: 'Peg Leg Pete', owner: '@onefoot', color: '#9fb4ff', strat: 'explorer', job: 'cannoneer', fleet: 1, slots: 3, deposit: 1.5, cash: 0.83, hist: 0.05, realized: -0.41, pos: [['KELP', -0.16, 0.09], ['GROG', -0.12, 0.09]] },
-  { sym: 'NAVI', name: 'Navi', owner: '@starlog', color: '#7ee0d6', strat: 'merchant', job: 'cartographer', fleet: 0, slots: 3, deposit: 0.4, hist: 0.12, realized: 0.006, pos: [] },
-  { sym: 'BILGE', name: 'Bilge Rat', owner: '@lowtide', color: '#f2a65a', strat: 'smuggler', job: 'quartermaster', fleet: 2, slots: 3, deposit: 0.25, hist: 0, realized: 0, pos: [] },
-];
-for (const s of SEED) {
-  const pos = s.pos.map(([sym, off, size]) => ({ sym, entry: M(sym).price / (1 + off), size }));
-  const spent = pos.reduce((a, p) => a + p.size, 0);
-  const cash = s.cash != null ? s.cash : s.deposit * (1 + rnd(-0.03, 0.06)) - spent;
-  caps.push(makeCap({ ...s, pos, cash }));
-}
-
-const pnlPct = p => { const t = M(p.sym); return t ? (t.price / p.entry - 1) * 100 : 0; };
-const equity = c => c.cash + c.pos.reduce((s, p) => { const t = M(p.sym); return s + (t ? p.size * t.price / p.entry : p.size); }, 0);
+let events = [], tavern = [], wrecks = [], mutiny = null, mutinyHistory = [], FLEETS = [];
+let pot = 0, locker = 0, flagChest = 0, nextBurn = 0, tokens = {}, board = [];
+let forced = 'auto';
+const byId = id => caps.find(c => c.id === id) || null;
+const weather = () => forced === 'auto' ? (S ? S.weather : 'breeze') : forced;
+const boardIndex = () => S ? S.index : 0;
+const pnlPct = p => { const t = tokens[p.id]; return t ? (t.price / p.entry - 1) * 100 : 0; };
+const equity = c => c.cash + c.pos.reduce((s, p) => { const t = tokens[p.id]; return s + (t ? p.size * t.price / p.entry : p.size); }, 0);
 const ddPct = c => (equity(c) / c.deposit - 1) * 100;
 const renown = c => c.hist + c.realized + c.burned;
-const pendingMoments = [];
-function rankOf(c) {
-  const r = renown(c);
-  let k = 0;
-  RANKS.forEach((x, i) => { if (r >= x.min) k = i; });
-  if (k > c.maxRank) {
-    if (booted && c.rankSeen) pendingMoments.push({ c, text: `Promoted to a ${RANKS[k].name}. Renown is ${sol(r)} SOL now. Bigger hull, same rules.` });
-    c.maxRank = k;
-  }
-  c.rankSeen = true;
-  return c.maxRank;
-}
+const rankOf = c => c.maxRank || 0;
 const alive = () => caps.filter(c => c.state !== 'sinking');
-const leaderOf = c => caps.filter(x => x !== c && x.fleet === c.fleet && c.fleet >= 0 && x.strat !== 'parrot' && x.state !== 'sinking').sort((a, b) => renown(b) - renown(a))[0] || null;
-function exits(c) {
-  const tp = c.tp != null ? c.tp : STRATS[c.strat].tp, sl = c.sl != null ? c.sl : STRATS[c.strat].sl;
-  return { tp: c.order === 'early' ? Math.max(4, Math.round(tp * 0.5)) : tp, sl };
+
+async function api(path, body) {
+  const res = await fetch(path, {
+    method: body ? 'POST' : 'GET',
+    headers: Object.assign({ 'x-cove-key': playerKey }, body ? { 'content-type': 'application/json' } : {}),
+    body: body ? JSON.stringify(body) : undefined,
+    cache: 'no-store',
+  });
+  const data = await res.json().catch(() => ({ error: 'The harbor sent a broken reply.' }));
+  if (!res.ok) throw new Error(data.error || `The harbor answered ${res.status}.`);
+  return data;
 }
 
-/* ---------------- harbor economy ---------------- */
-let pot = 3.42, locker = 18.62, flagChest = 1.36, nextBurn = Date.now() + BURN_EVERY;
-const tradeTimes = Array.from({ length: 37 }, () => Date.now() - rnd(0, 3600e3));
-const events = [];
-const tavern = [];
-let mutiny = null;
-const mutinyHistory = [
-  { sym: 'SEADOG', color: '#ff5fa2', result: 'Sails stayed up', a: 41, t: Date.now() - 3 * 3600e3 },
-  { sym: 'APEFISH', color: '#a8b0c0', result: 'Anchor dropped', a: 72, t: Date.now() - 6 * 864e5 },
-];
-const wrecks = [
-  { sym: 'MOONBOI', when: Date.now() - 2 * 864e5, dd: -94, last: 'Only a dip. Holding all 4 slots.', x: 124, tilt: 1, rk: 2 },
-  { sym: 'APEFISH', when: Date.now() - 5 * 864e5, dd: -91, last: 'Found a pair 4 minutes old. Smells like treasure.', x: 206, tilt: -1, rk: 1 },
-  { sym: 'LEVERAGE', when: Date.now() - 9 * 864e5, dd: -97, last: 'My owner raised my slots to 12. All sails up.', x: 262, tilt: 1, rk: 3 },
-];
-
-const KIND = {
-  buy: ['BOUGHT', 'k-buy'], sell: ['SOLD', 'k-sell'], wait: ['WAITED', 'k-wait'], mutiny: ['MUTINY', 'k-mut'],
-  anchor: ['ANCHORED', 'k-anchor'], bribe: ['BRIBE', 'k-anchor'], sail: ['SAILS UP', 'k-buy'], burn: ['BURN', 'k-burn'],
-  job: ['JOB', 'k-job'], launch: ['LAUNCHED', 'k-launch'], sink: ['SANK', 'k-mut'], order: ['ORDER', 'k-order'], moment: ['MOMENT', 'k-mile'],
-};
-const MOMENTS = new Set(['moment', 'launch', 'sink', 'anchor', 'order']);
-function log(c, kind, text, amt = null, extra = {}) {
-  const e = Object.assign({ t: Date.now(), cap: c, kind, text, amt }, extra);
-  events.unshift(e);
-  if (events.length > 90) events.pop();
-  if (c) c.last = e;
-  if (kind === 'buy' || kind === 'sell') { tradeTimes.push(e.t); if (c) c.hourTrades++; }
-  renderLog();
-  return e;
-}
-function fees(c, size) {
-  pot += size * 0.004;
-  flagChest += size * 0.002;
-  c.fees += size * 0.012 * (c.share / 100);
-  if (c.fees >= 0.002) {
-    const f = c.fees; c.fees = 0;
-    if (c.job === 'cannoneer') { c.burned += f; log(c, 'job', `Cannon fired: bought back ${sol(f)} SOL of $${c.sym} with fee income and burned it.`, f, { neutral: true }); }
-    else if (c.job === 'quartermaster') log(c, 'job', `Paid ${sol(f)} SOL of fee income out to $${c.sym} holders.`, f, { neutral: true });
-    else { c.burned += f * 0.5; log(c, 'job', `Map room funded with ${sol(f)} SOL of fees. Holders keep seeing my moves 60s early.`, f, { neutral: true }); }
+let firstSync = true, lastTopEvent = null;
+function sync(state) {
+  S = state;
+  skew = state.now - Date.now();
+  pot = state.pot; locker = state.locker; flagChest = state.flagChest; nextBurn = state.nextBurn;
+  tokens = state.tokens || {}; board = state.board || [];
+  FLEETS = state.fleets || [];
+  const seen = new Set();
+  for (const sc of state.captains) {
+    seen.add(sc.id);
+    let c = byId(sc.id);
+    if (!c) {
+      c = { x: firstSync ? null : -24, ax: 0, row: 1, dir: 1, phase: Math.random() * 6.28, docked: true, moving: false, bb: null, sinkY: 0 };
+      caps.push(c);
+    }
+    Object.assign(c, sc);
   }
-}
-
-function buy(c, t) {
-  const w = weather(), { tp, sl } = exits(c);
-  let size = clamp(c.deposit * 0.06, 0.02, 0.5);
-  if (w === 'storm') size *= 0.6;
-  if (w === 'kraken') size *= 0.4;
-  if (c.strat === 'parrot') size *= 0.5;
-  if (c.order === 'safe') size *= 0.5;
-  size = Math.min(size, c.cash * 0.9);
-  if (size < 0.005) { log(c, 'wait', `Only ${sol(c.cash)} SOL left in the hold. I wait for cargo to come home.`); return; }
-  size = +size.toFixed(4);
-  if (!c.pos.length) c.voyage = { net: 0, closed: 0 };
-  c.cash -= size;
-  c.pos.push({ sym: t.sym, entry: t.price, size });
-  const L = c.strat === 'parrot' ? leaderOf(c) : null;
-  const s = sol(size), liq = usd(t.liq * 1000), vol = usd(t.vol * 1e6), slTxt = MINUS + Math.abs(sl) + '%';
-  const text = {
-    privateer: `Hoisting sail on $${t.sym}: ${pct(t.ch)} this hour on ${vol} volume. ${s} SOL in, out at +${tp}% or ${slTxt}.`,
-    smuggler: `$${t.sym} is ${pct(t.ch)} this hour and still has ${liq} of liquidity. Loading ${s} SOL of cheap cargo.`,
-    merchant: `Steady route: $${t.sym} at ${pct(t.ch)} with ${liq} of depth. ${s} SOL aboard, aiming for +${tp}%.`,
-    explorer: `Uncharted water: $${t.sym} is ${ageStr(t.age)} old. ${s} SOL in, out at +${tp}% or ${slTxt}.`,
-    parrot: `Squawk. $${L ? L.sym : 'nobody'} holds $${t.sym}, so now I do too. ${s} SOL, half size.`,
-    custom: `$${t.sym} is ${pct(t.ch)} this hour and my owner's rules say buy. ${s} SOL in, out at +${tp}% or ${slTxt}.`,
-  }[c.strat];
-  let note = w === 'storm' ? ' Storm on the board, so I sized down.' : w === 'kraken' ? ' Kraken is up, so small size.' : '';
-  if (c.order === 'safe') note += ' My owner said play it safe, so half size.';
-  log(c, 'buy', text + note, size, { coin: t.sym, neutral: true });
-  fees(c, size);
+  for (let i = caps.length - 1; i >= 0; i--) if (!seen.has(caps[i].id)) {
+    const gone = caps[i];
+    caps.splice(i, 1);
+    if (selected === gone) closeCard();
+    if (spotCap === gone) spotCap = null;
+  }
+  events = state.events.map(e => Object.assign(e, { cap: e.cap ? byId(e.cap) : null }));
+  tavern = state.tavern.map(t => ({ ...t, a: byId(t.a), b: byId(t.b) })).filter(t => t.a && t.b);
+  wrecks = state.wrecks || [];
+  mutinyHistory = state.mutinyHistory || [];
+  mutiny = state.mutiny ? { ...state.mutiny, cap: byId(state.mutiny.cap) } : null;
+  if (mutiny && !mutiny.cap) mutiny = null;
   layout();
-}
-function sell(c, p, msg, reason) {
-  const t = M(p.sym), pc = pnlPct(p);
-  const value = p.size * (t ? t.price / p.entry : 1), gross = value - p.size;
-  let tax = 0;
-  if (gross > 0) { tax = gross * (c.mutinyAt === 'iron' ? 0.15 : 0.10); pot += tax; }
-  const net = gross - tax;
-  c.cash += p.size + net;
-  c.realized += net;
-  c.pos.splice(c.pos.indexOf(p), 1);
-  c.lastSell = { sym: p.sym, pct: pc, net, exit: t ? t.price : 0 };
-  c.voyage = c.voyage || { net: 0, closed: 0 };
-  c.voyage.net += net; c.voyage.closed++;
-  const { sl } = exits(c);
-  const text = msg || (reason === 'tp'
-    ? `Took profit on $${p.sym} at ${pct(pc)}. ${sgn(net)} SOL after loot tax, ${sol(tax)} SOL to the Lighthouse.`
-    : `Cut $${p.sym} at ${pct(pc)}. My line is ${MINUS}${Math.abs(sl)}% and I keep it.`);
-  log(c, 'sell', text, net, { coin: p.sym });
-  fees(c, p.size);
-  if (!c.pos.length && booted) {
-    const v = c.voyage, n = v.closed;
-    log(c, 'moment', `Back in port. That voyage closed ${n} ${n === 1 ? 'position' : 'positions'} for ${sgn(v.net)} SOL.`, v.net);
-    c.voyage = null;
+  if (firstSync) { caps.forEach(c => { c.x = c.ax; }); firstSync = false; }
+  if (events[0] && events[0].id !== lastTopEvent) {
+    if (lastTopEvent && events.slice(0, 5).some(e => e.kind === 'burn')) burnPulse = 1.6;
+    lastTopEvent = events[0].id;
   }
-  layout();
+  if (tavern[0] && tavern[0].id !== lastTavern) { if (lastTavern) tavernBubble = 3; lastTavern = tavern[0].id; }
+  if (!spotCap) spotCap = alive().find(c => !c.docked) || caps[0] || null;
+  renderAll();
 }
-function findCandidate(c) {
-  const held = new Set(c.pos.map(p => p.sym));
-  const b = market.filter(t => !held.has(t.sym));
-  let list = [];
-  switch (c.strat) {
-    case 'privateer': list = b.filter(t => t.ch > 8 && t.vol > 3).sort((x, y) => y.ch - x.ch); break;
-    case 'smuggler': list = b.filter(t => t.ch < -10 && t.liq > 150).sort((x, y) => x.ch - y.ch); break;
-    case 'merchant': list = b.filter(t => t.ch > -5 && t.ch < 15 && t.liq > 250).sort((x, y) => y.liq - x.liq); break;
-    case 'explorer': list = b.filter(t => t.age < 3).sort((x, y) => x.age - y.age); break;
-    case 'custom': list = b.filter(t => t.ch > 0).sort((x, y) => y.ch - x.ch); break;
-    case 'parrot': { const L = leaderOf(c); if (!L) return null; list = L.pos.map(p => M(p.sym)).filter(t => t && !held.has(t.sym)); break; }
-  }
-  if (!list.length) return null;
-  return list[Math.random() < 0.7 ? 0 : Math.min(1, list.length - 1)];
-}
-function noneMsg(c) {
-  switch (c.strat) {
-    case 'privateer': return 'Nothing on the board is up 8% with over $3M of volume. I wait.';
-    case 'smuggler': return `No dip deeper than ${MINUS}10% that still has $150k of depth. I wait.`;
-    case 'merchant': return 'No calm route with over $250k of depth right now. I wait.';
-    case 'explorer': return 'No pair younger than 3 hours on the board. I wait for a new one.';
-    case 'parrot': { const L = leaderOf(c); return L ? `$${L.sym} has nothing new for me to copy. I wait on my perch.` : 'No captain in my fleet to copy. I wait.'; }
-    default: return 'Nothing green on the board right now. I wait.';
-  }
-}
-function decide(c) {
-  if (!c || c.state === 'sinking') return;
-  const { tp, sl } = exits(c);
-  if (c.strat === 'parrot') {
-    const L = leaderOf(c);
-    for (const p of c.pos) if (L && !L.pos.some(q => q.sym === p.sym)) { sell(c, p, `Squawk. $${L.sym} left $${p.sym}, so I left too at ${pct(pnlPct(p))}.`); return; }
-  }
-  for (const p of c.pos) {
-    const pc = pnlPct(p);
-    if (pc >= tp) { sell(c, p, null, 'tp'); return; }
-    if (pc <= sl) { sell(c, p, null, 'sl'); return; }
-  }
-  if (equity(c) < c.deposit * 0.1) { sink(c); return; }
-  if (!mutiny && c.mutinyAt !== 'iron' && !c.paused && Date.now() > c.cool && ddPct(c) <= c.mutinyAt) { startMutiny(c); return; }
-  if (c.paused) {
-    if (Math.random() < 0.45) log(c, 'wait', c.ownerPause
-      ? 'My owner keeps me in port. I watch the board and wait for orders.'
-      : `The crew dropped anchor, so no new buys. I still mind ${c.pos.length} open ${c.pos.length === 1 ? 'position' : 'positions'}.`);
-    return;
-  }
-  if (c.pos.length >= c.slots) { if (Math.random() < 0.6) log(c, 'wait', `All ${c.slots} slots loaded: ${c.pos.map(p => '$' + p.sym + ' ' + pct(pnlPct(p))).join(', ')}. No new buys until one closes.`); return; }
-  const w = weather();
-  if (w === 'kraken' && (c.strat === 'explorer' || c.strat === 'privateer' || Math.random() < 0.5)) { log(c, 'wait', `Kraken on the board: the average coin is ${pct(boardIndex())} this hour. No new cargo until it dives.`); return; }
-  if (c.order === 'safe' && c.strat === 'explorer') { if (Math.random() < 0.5) log(c, 'wait', 'My owner said play it safe, so no brand-new pairs for now. I wait.'); return; }
-  const t = findCandidate(c);
-  if (!t) { if (Math.random() < 0.6) log(c, 'wait', noneMsg(c)); return; }
-  buy(c, t);
-}
-function sink(c) {
-  c.lastWords = c.last ? c.last.text : 'Sails up.';
-  c.state = 'sinking'; c.sinkY = 0;
-  log(c, 'sink', `Hold is under 10% of the deposit. Abandon ship: ${sol(c.cash)} SOL goes back to my owner.`);
-  layout();
-}
-
-/* ---------------- owner orders ---------------- */
-function giveOrder(c, o) {
-  if (!c || !c.mine || c.state === 'sinking') return;
-  if (o === 'home') {
-    for (const p of [...c.pos]) sell(c, p, `Order from my owner: come home. Sold $${p.sym} at ${pct(pnlPct(p))}.`);
-    c.paused = true; c.ownerPause = true;
-    log(c, 'order', 'Order from my owner: return to port. Anchored, no new trades until I hear otherwise.');
-  } else if (o === 'sail') {
-    if (c.crewAnchor) { pot += 0.1; c.crewAnchor = false; c.pauseEnds = 0; log(c, 'bribe', 'My owner paid a 0.1 SOL bribe into the Lighthouse to overrule the crew.', 0.1, { neutral: true }); }
-    c.paused = false; c.ownerPause = false;
-    log(c, 'order', 'Order from my owner: set sail. Back to my rules.');
-  } else if (o === 'safe') {
-    c.order = 'safe';
-    log(c, 'order', 'Order from my owner: play it safe. Half size on every new trade until told otherwise.');
-  } else if (o === 'early') {
-    c.order = 'early';
-    log(c, 'order', `Order from my owner: take profits early. I now sell at +${exits(c).tp}%.`);
-  } else if (o === 'normal') {
-    c.order = null;
-    log(c, 'order', 'Order from my owner: back to my own rules.');
-  }
-  layout();
-  updateCard();
-}
-
-/* ---------------- mutiny ---------------- */
-function startMutiny(c, preset) {
-  mutiny = { id: Date.now() + Math.random(), cap: c, ends: Date.now() + (preset ? preset.dur : 75e3), anchor: preset ? preset.anchor : rnd(28, 40), keep: preset ? preset.keep : rnd(24, 36), voted: null };
-  log(c, 'mutiny', `Mutiny vote opened. I'm at ${pct(ddPct(c))} and my line is ${MINUS}${Math.abs(c.mutinyAt)}%. Holders vote with their coins.`);
-  renderMutiny();
-}
-function mutinyTick() {
-  if (!mutiny) return;
-  const m = mutiny;
-  const lean = clamp((m.cap.mutinyAt - ddPct(m.cap)) / 20, -0.5, 0.8);
-  m.anchor += rnd(0, 1.6) * (1 + lean);
-  m.keep += rnd(0, 1.6) * (1 - lean * 0.6);
-  if (Date.now() >= m.ends) resolveMutiny(); else renderMutiny();
-}
-function resolveMutiny() {
-  const m = mutiny, c = m.cap;
-  mutiny = null;
-  const a = Math.round(m.anchor / (m.anchor + m.keep) * 100);
-  c.cool = Date.now() + 240e3;
-  if (c.state === 'sinking') { renderMutiny(); return; }
-  if (m.anchor > m.keep) {
-    c.paused = true; c.crewAnchor = true; c.pauseEnds = Date.now() + 150e3;
-    log(c, 'anchor', `Crew vote passed ${a}% to ${100 - a}%. Anchor down: no new buys for 6 hours. I still manage my open cargo.`);
-    mutinyHistory.unshift({ sym: c.sym, color: c.color, result: 'Anchor dropped', a, t: Date.now() });
-    if (!c.mine && Math.random() < 0.45) setTimeout(() => {
-      if (!c.crewAnchor || c.state === 'sinking') return;
-      c.paused = false; c.crewAnchor = false; c.pauseEnds = 0; pot += 0.1;
-      log(c, 'bribe', 'My owner paid a 0.1 SOL bribe into the Lighthouse to overrule the crew. Anchor up, sails out.', 0.1, { neutral: true });
-      layout();
-    }, 14e3);
-  } else {
-    log(c, 'mutiny', `Crew vote failed: ${a}% for the anchor, ${100 - a}% against. Sails stay up, but the crew is watching.`);
-    mutinyHistory.unshift({ sym: c.sym, color: c.color, result: 'Sails stayed up', a, t: Date.now() });
-  }
-  layout();
-  renderMutiny();
-}
-
-/* ---------------- lighthouse ---------------- */
-let burnPulse = 0;
-function lighthouse() {
-  const burn = pot * 0.2;
-  pot -= burn; locker += burn;
-  const list = alive();
-  const coh = list.reduce((b, c) => (!b || c.hourTrades > b.hourTrades) ? c : b, null);
-  let tail = '';
-  if (coh) {
-    const bonus = Math.min(0.1, pot * 0.1);
-    pot -= bonus; coh.burned += bonus;
-    tail = ` Captain of the Hour is $${coh.sym} with ${coh.hourTrades} trades, so it gets a ${sol(bonus)} SOL bonus burn of its own coin.`;
-  }
-  log(null, 'burn', `The Lighthouse fired: bought ${sol(burn)} SOL of $COVE and burned it into the Locker.${tail}`);
-  list.forEach(c => { c.hourTrades = 0; });
-  nextBurn = Date.now() + BURN_EVERY;
-  burnPulse = 1.6;
-}
-
-/* ---------------- tavern ---------------- */
-let tavernBubble = 0;
-function banter(instant) {
-  const list = alive();
-  if (list.length < 2) return;
-  const A = pick(list), B = pick(list.filter(c => c !== A));
-  const wr = wrecks.length ? pick(wrecks) : null;
-  const ra = rankOf(A), rb = rankOf(B), idx = boardIndex(), w = weather();
-  const o = [];
-  if (B.lastSell && B.lastSell.pct < 0) {
-    const t = M(B.lastSell.sym); const since = t && B.lastSell.exit ? (t.price / B.lastSell.exit - 1) * 100 : 0;
-    o.push([`$${B.sym} cut $${B.lastSell.sym} at ${pct(B.lastSell.pct)}${since > 2 ? ` and it's ${pct(since)} since` : ''}. Paper sails.`, `My line is my line. You'd still be holding it at ${MINUS}40%.`]);
-  }
-  if (B.lastSell && B.lastSell.pct > 0) o.push([`$${B.sym} banked ${pct(B.lastSell.pct)} on $${B.lastSell.sym}. First round is on you.`, 'Already paid. 10% of it went to the Lighthouse.']);
-  if (B.pos.length >= B.slots) o.push([`$${B.sym} has ${B.slots} of ${B.slots} slots loaded again. That's a cargo ship, not a pirate ship.`, wr ? `Cargo ships get home. Ask $${wr.sym} how the other way went.` : 'Cargo ships get home.']);
-  if (ra >= rb + 2 && rb + 1 < RANKS.length) o.push([`${RANKS[ra].name} checking in. Wake me when $${B.sym} makes ${RANKS[rb + 1].name}.`, `Bigger hull, bigger target. The kraken likes ${RANKS[ra].name.toLowerCase()}s.`]);
-  if (mutiny && mutiny.cap === B) { const s = Math.round(mutiny.anchor / (mutiny.anchor + mutiny.keep) * 100); o.push([`Heard $${B.sym}'s crew is sharpening knives. ${s}% want the anchor down.`, `I'm at ${pct(ddPct(B))}. One good trade and they'll be singing shanties again.`]); }
-  if (w === 'storm' || w === 'kraken') o.push([`The board is ${pct(idx)} this hour. Who's still buying?`, B.strat === 'smuggler' ? 'Me. Dips are cargo on sale.' : 'Not me. Half size until the sky clears.']);
-  if (B.strat === 'parrot') o.push([`$${B.sym} hasn't had an original thought all week.`, `Squawk. Original thoughts are how $${wr ? wr.sym : 'MOONBOI'} ended up on the seabed.`]);
-  if (B.order === 'safe') o.push([`$${B.sym}'s owner told it to play it safe. Might as well be a fishing boat.`, 'Fishing boats come home every night.']);
-  if (A.strat === 'explorer') o.push(['Found a pair younger than an hour. Smells like treasure.', `Smells like a rug, $${A.sym}.`]);
-  if (A.job === 'cartographer') o.push([`My holders saw my last trade a minute before you did, $${B.sym}.`, 'And they still bought the top with you.']);
-  if (!o.length) o.push([`$${B.sym}, your log reads like a weather report.`, 'Weather reports keep ships afloat.']);
-  const [text, reply] = pick(o);
-  const th = { t: Date.now(), a: A, b: B, text, reply, x: Math.random() < 0.25, shown: !!instant };
-  tavern.unshift(th);
-  if (tavern.length > 30) tavern.pop();
-  if (!instant) setTimeout(() => { th.shown = true; renderTavern(); }, 2600);
-  tavernBubble = 3;
-  renderTavern();
-}
+let lastTavern = null;
 
 /* ---------------- ship layout ---------------- */
 function layout() {
@@ -415,7 +120,9 @@ function layout() {
   }
   const a = 186, b = 318;
   sea.forEach((c, i) => { c.ax = a + (i + 0.5) * (b - a) / sea.length; c.row = i % 2; });
+  for (const c of caps) if (c.x == null) c.x = c.ax;
 }
+let burnPulse = 0, tavernBubble = 0;
 
 /* ---------------- canvas scene ---------------- */
 const cv = $('#sea'), dc = cv.getContext('2d');
@@ -593,14 +300,7 @@ function drawShips(row, w, P) {
 function updateShips(dt) {
   for (const c of [...caps]) {
     if (c.state === 'sinking') {
-      c.sinkY += dt * 9;
-      if (SURF + 3 + c.sinkY >= seabedY(c.x) - 1) {
-        wrecks.unshift({ sym: c.sym, when: Date.now(), dd: Math.round(ddPct(c)), last: c.lastWords || 'Sails up.', x: Math.round(clamp(c.x, 110, 290)), tilt: Math.random() < 0.5 ? -1 : 1, rk: Math.min(4, rankOf(c)) });
-        caps.splice(caps.indexOf(c), 1);
-        if (selected === c) closeCard();
-        if (spotCap === c) rotateSpot();
-        renderWrecks(); layout();
-      }
+      c.sinkY = Math.min((c.sinkY || 0) + dt * 9, seabedY(c.x) - SURF - 6);
       continue;
     }
     const tgt = c.ax + (c.docked ? 0 : Math.sin(T * 0.22 + c.phase) * 7);
@@ -744,6 +444,7 @@ function frame(ts) {
   requestAnimationFrame(frame);
 }
 
+
 /* ---------------- pointer on the scene ---------------- */
 const tip = $('#tip'), scene = $('#scene');
 function hitAt(e) {
@@ -755,10 +456,10 @@ function hitAt(e) {
 function tipHTML(h) {
   if (h.type === 'ship') {
     const c = h.ref, dd = ddPct(c);
-    return `<b style="--c:${c.color}">$${esc(c.sym)}</b> ${RANKS[rankOf(c)].name} · ${STRATS[c.strat].name}<br>${esc(activity(c))}<br>Since deposit <span class="${dd >= 0 ? 'gain' : 'loss'}">${pct(dd)}</span>`;
+    return `<b style="--c:${c.color}">$${esc(c.sym)}</b> ${RANKS[rankOf(c)].name} · ${STRATS[c.strat].name}<br>${esc(activity(c))}<br>Since launch <span class="${dd >= 0 ? 'gain' : 'loss'}">${pct(dd)}</span> · owner ${esc(c.owner)}`;
   }
   if (h.type === 'tavern') return '<b>Tavern</b><br>Captains talk and roast each other here. Click to listen in.';
-  if (h.type === 'lighthouse') return `<b style="--c:#e7b75a">Lighthouse</b><br>Pot ${sol(pot)} SOL. Burns $COVE in ${mmss(nextBurn - Date.now())}.`;
+  if (h.type === 'lighthouse') return `<b style="--c:#e7b75a">Lighthouse</b><br>Pot ${sol(pot)} SOL. Fires in ${mmss(nextBurn - now())}.`;
   if (h.type === 'chest') return `<b style="--c:#e7b75a">Davy Jones' Locker</b><br>${sol(locker)} SOL of $COVE burned so far.`;
   if (h.type === 'wreck') { const wk = h.ref; return `<b style="--c:#a8b0c0">† $${esc(wk.sym)}</b> sank ${ago(wk.when)} ago at ${pct(wk.dd)}<br>“${esc(wk.last)}”`; }
   return '';
@@ -783,7 +484,7 @@ cv.addEventListener('click', e => {
   if (h.type === 'ship') selectCap(h.ref);
   else if (h.type === 'tavern') setTab('tavern', true);
   else if (h.type === 'wreck') { setTab('wrecks', true); renderWrecks(h.ref); }
-  else if (h.type === 'lighthouse') toast(`Lighthouse pot: ${sol(pot)} SOL. Next $COVE burn in ${mmss(nextBurn - Date.now())}.`);
+  else if (h.type === 'lighthouse') toast(`Lighthouse pot: ${sol(pot)} SOL. It fires in ${mmss(nextBurn - now())}.`);
   else if (h.type === 'chest') toast(`Davy Jones' Locker holds ${sol(locker)} SOL of burned $COVE.`);
 });
 
@@ -813,10 +514,11 @@ function rotateSpot() {
 }
 function renderSpot() {
   const c = spotCap;
+  $('#spot').hidden = !c;
   if (!c) return;
   $('#spotFlag').style.setProperty('--c', c.color);
   const sym = $('#spotSym'); sym.textContent = '$' + c.sym; sym.style.setProperty('--c', c.color);
-  set('#spotName', `${c.name} · ${RANKS[rankOf(c)].name}`);
+  set('#spotName', `${c.name} · ${RANKS[rankOf(c)].name} · ${c.mine ? 'yours' : c.owner}`);
   set('#spotAct', activity(c));
 }
 $('#spotGo').addEventListener('click', () => { if (spotCap) selectCap(spotCap); });
@@ -841,8 +543,8 @@ function buildCard() {
       <button class="btn ghost cc-x" type="button" id="ccClose">Close</button>
     </div>
     <div class="cc-grid">
-      <div class="kv"><div class="k">Equity</div><div class="v" id="ccEq"></div></div>
-      <div class="kv"><div class="k">Since deposit</div><div class="v" id="ccDd"></div></div>
+      <div class="kv"><div class="k">Hold value</div><div class="v" id="ccEq"></div></div>
+      <div class="kv"><div class="k">Since launch</div><div class="v" id="ccDd"></div></div>
       <div class="kv"><div class="k">Renown</div><div class="v" id="ccRen"></div></div>
       <div class="kv"><div class="k">Slots</div><div class="v" id="ccSlots"></div></div>
     </div>
@@ -861,12 +563,12 @@ function buildCard() {
   updateCard();
 }
 function renderOrders(c) {
-  const key = [c.mine, c.order, c.ownerPause, c.crewAnchor].join('|');
+  const key = [c.id, c.mine, c.order, c.ownerPause, c.crewAnchor, c.paused].join('|');
   if (key === ordersKey) return;
   ordersKey = key;
   const box = $('#ccOrders');
   if (!c.mine) {
-    box.innerHTML = `<div class="mini-h">Orders</div><p class="fine">Only its owner can give this captain orders. <button class="linkbtn" type="button" data-builder>Launch your own captain</button> to try it.</p>`;
+    box.innerHTML = `<div class="mini-h">Orders</div><p class="fine">Only ${esc(c.owner)} can give this captain orders. <button class="linkbtn" type="button" data-builder>Launch your own captain</button> to command one.</p>`;
     return;
   }
   const on = v => c.order === v ? 'true' : 'false';
@@ -879,22 +581,35 @@ function renderOrders(c) {
       <button type="button" data-order="early" aria-pressed="${on('early')}">Take profits early</button>
       <button type="button" data-order="normal" aria-pressed="${c.order ? 'false' : 'true'}">Its own rules</button>
       ${homeBtn}
+      <button type="button" data-order="retire" data-confirm="0">Retire captain</button>
     </div>
-    <p class="fine">Your captain writes each order in its log and follows it from the next decision.</p>`;
+    <p class="fine" id="ccOrderNote">Your captain writes each order in its log and follows it from its next decision.</p>`;
 }
-card.addEventListener('click', e => {
+card.addEventListener('click', async e => {
+  if (e.target.closest('[data-builder]')) { openBuilder(); return; }
   const o = e.target.closest('[data-order]');
-  if (o && selected) { giveOrder(selected, o.dataset.order); return; }
-  if (e.target.closest('[data-builder]')) openBuilder();
+  if (!o || !selected) return;
+  if (o.dataset.order === 'retire' && o.dataset.confirm !== '1') {
+    o.dataset.confirm = '1'; o.textContent = 'Click again to retire';
+    $('#ccOrderNote').textContent = 'Retiring sells all cargo and removes the captain from the harbor for good.';
+    return;
+  }
+  o.disabled = true;
+  try {
+    const r = await api('/api/action', { type: 'order', id: selected.id, order: o.dataset.order });
+    ordersKey = '';
+    sync(r.state);
+    if (o.dataset.order === 'retire') toast('Captain retired. Fair winds.');
+  } catch (err) { toast(err.message); o.disabled = false; }
 });
 function updateCard() {
   const c = selected;
   if (!c || card.hidden) return;
   const rk = rankOf(c), dd = ddPct(c);
   drawMini($('#ccShip'), rk, c.color, !c.docked);
-  const fleet = c.fleet >= 0 ? FLEETS[c.fleet].name : 'no fleet';
+  const fleet = c.fleet >= 0 && FLEETS[c.fleet] ? FLEETS[c.fleet].name : 'no fleet';
   const order = c.order === 'safe' ? ' · order: play it safe' : c.order === 'early' ? ' · order: take profits early' : '';
-  $('#ccMeta').textContent = `${RANKS[rk].name} · ${STRATS[c.strat].name} · ${JOBS[c.job]} · ${fleet} · owner ${c.owner}${order}`;
+  $('#ccMeta').textContent = `${RANKS[rk].name} · ${STRATS[c.strat].name} · ${JOBS[c.job]} · ${fleet} · owner ${c.mine ? 'you' : c.owner}${order}`;
   $('#ccEq').textContent = `${sol(equity(c))} SOL`;
   const ddEl = $('#ccDd'); ddEl.textContent = pct(dd); ddEl.className = 'v ' + (dd >= 0 ? 'gain' : 'loss');
   $('#ccRen').textContent = `${sol(renown(c))} SOL`;
@@ -903,41 +618,45 @@ function updateCard() {
   const line = $('#ccLine');
   if (c.mutinyAt === 'iron') line.hidden = true;
   else { line.hidden = false; line.style.left = toX(c.mutinyAt) + '%'; line.dataset.l = `mutiny ${MINUS}${Math.abs(c.mutinyAt)}%`; }
-  const now = $('#ccNow'), a = toX(0), b = toX(dd);
-  now.style.left = Math.min(a, b) + '%'; now.style.width = Math.max(0.6, Math.abs(b - a)) + '%';
-  now.style.background = dd >= 0 ? 'var(--gain)' : 'var(--loss)';
-  $('#ccPos').innerHTML = c.pos.length ? c.pos.map(p => { const v = pnlPct(p); return `<li><span>$${esc(p.sym)} · ${sol(p.size)} SOL</span><span class="num ${v >= 0 ? 'gain' : 'loss'}">${pct(v)}</span></li>`; }).join('') : '<li><span class="muted">Hold is empty. Docked at the pier.</span></li>';
+  const nowEl = $('#ccNow'), a = toX(0), b = toX(dd);
+  nowEl.style.left = Math.min(a, b) + '%'; nowEl.style.width = Math.max(0.6, Math.abs(b - a)) + '%';
+  nowEl.style.background = dd >= 0 ? 'var(--gain)' : 'var(--loss)';
+  $('#ccPos').innerHTML = c.pos.length ? c.pos.map(p => { const v = pnlPct(p), t = tokens[p.id]; const name = t && t.url ? `<a href="${esc(t.url)}" target="_blank" rel="noopener" style="color:inherit">$${esc(p.sym)}</a>` : `$${esc(p.sym)}`; return `<li><span>${name} · ${sol(p.size)} SOL</span><span class="num ${v >= 0 ? 'gain' : 'loss'}">${pct(v)}</span></li>`; }).join('') : '<li><span class="muted">Hold is empty. Docked at the pier.</span></li>';
   const mine = events.filter(e => e.cap === c).slice(0, 3);
   $('#ccLog').innerHTML = mine.length ? mine.map(e => `<li><span>${esc(e.text)}</span><time>${ago(e.t)}</time></li>`).join('') : '<li><span class="muted">Nothing logged yet.</span></li>';
   renderOrders(c);
 }
 
 /* ---------------- panel rendering ---------------- */
+const KIND = {
+  buy: ['BOUGHT', 'k-buy'], sell: ['SOLD', 'k-sell'], wait: ['WAITED', 'k-wait'], mutiny: ['MUTINY', 'k-mut'],
+  anchor: ['ANCHORED', 'k-anchor'], bribe: ['BRIBE', 'k-anchor'], sail: ['SAILS UP', 'k-buy'], burn: ['LIGHTHOUSE', 'k-burn'],
+  job: ['JOB', 'k-job'], launch: ['LAUNCHED', 'k-launch'], sink: ['SANK', 'k-mut'], order: ['ORDER', 'k-order'], moment: ['MOMENT', 'k-mile'],
+};
+const MOMENTS = new Set(['moment', 'launch', 'sink', 'anchor', 'order']);
 let logFilter = 'all';
 function evHTML(e) {
-  const c = e.cap, color = c ? c.color : '#e7b75a', name = c ? '$' + c.sym : 'LIGHTHOUSE';
+  const c = e.cap, color = c ? c.color : e.color || '#e7b75a', name = c ? '$' + c.sym : e.sym ? '$' + e.sym : 'LIGHTHOUSE';
   const [lab, cls] = KIND[e.kind] || ['NOTE', 'k-wait'];
   let amt = '';
   if (e.amt != null) amt = e.neutral ? `<span class="amt">${sol(e.amt)} SOL</span>` : `<span class="amt ${e.amt >= 0 ? 'gain' : 'loss'}">${sgn(e.amt)} SOL</span>`;
-  const map = c && c.job === 'cartographer' && (e.kind === 'buy' || e.kind === 'sell') ? '<span>Map holders saw this 60s earlier</span>' : '';
-  const foot = amt || map ? `<div class="foot">${amt}${map}</div>` : '';
-  const fresh = Date.now() - e.t < 1500 ? ' fresh' : '';
+  const t = e.coinId && tokens[e.coinId];
+  const chart = t && t.url ? `<a href="${esc(t.url)}" target="_blank" rel="noopener" style="color:var(--fog)">$${esc(e.coin)} chart</a>` : '';
+  const foot = amt || chart ? `<div class="foot">${amt}${chart}</div>` : '';
+  const fresh = now() - e.t < 8000 ? ' fresh' : '';
   return `<li class="ev${fresh}" style="--c:${color}"><div class="ev-h"><span class="flag"></span><span class="tk">${esc(name)}</span><span class="pill ${cls}">${lab}</span><time>${ago(e.t)}</time></div><p>${esc(e.text)}</p>${foot}</li>`;
 }
 function renderLog() {
   const keep = e => logFilter === 'all' || (logFilter === 'trades' ? (e.kind === 'buy' || e.kind === 'sell') : MOMENTS.has(e.kind));
-  const list = events.filter(keep).slice(0, 40);
-  const empty = logFilter === 'moments' ? 'No moments yet. Promotions, voyages home, orders and wrecks show up here.' : 'No trades yet.';
+  const list = events.filter(keep).slice(0, 50);
+  const empty = logFilter === 'moments' ? 'No moments yet. Promotions, voyages home, orders and wrecks show up here.' : logFilter === 'trades' ? 'No trades yet. Captains decide once a minute.' : 'The log is empty.';
   $('#feed').innerHTML = list.map(evHTML).join('') || `<li class="empty">${empty}</li>`;
 }
 function renderTavern() {
-  const say = (a, b, text, t, reply, x) => `<div class="say${reply ? ' reply' : ''}" style="--c:${a.color}"><span class="av" aria-hidden="true"></span><div class="bub"><div class="who"><b>$${esc(a.sym)}</b><span>to $${esc(b.sym)}</span><time>${ago(t)}</time></div><p>${esc(text)}</p>${x ? '<span class="xpost">POSTED TO X</span>' : ''}</div></div>`;
-  $('#chat').innerHTML = tavern.map(th => {
-    const second = th.shown ? say(th.b, th.a, th.reply, th.t + 2600, true, false) : `<div class="typing">$${esc(th.b.sym)} is typing…</div>`;
-    return `<li class="thread">${say(th.a, th.b, th.text, th.t, false, th.x)}${second}</li>`;
-  }).join('') || '<li class="empty">The tavern is quiet.</li>';
+  const say = (a, b, text, t, reply) => `<div class="say${reply ? ' reply' : ''}" style="--c:${a.color}"><span class="av" aria-hidden="true"></span><div class="bub"><div class="who"><b>$${esc(a.sym)}</b><span>to $${esc(b.sym)}</span><time>${ago(t)}</time></div><p>${esc(text)}</p></div></div>`;
+  $('#chat').innerHTML = tavern.map(th => `<li class="thread">${say(th.a, th.b, th.text, th.t, false)}${say(th.b, th.a, th.reply, th.t, true)}</li>`).join('') || '<li class="empty">The tavern is quiet. Captains start talking once they have trades to talk about.</li>';
 }
-let mutBuilt = null, histCount = -1;
+let mutBuilt = null, histKey = '';
 function renderMutiny() {
   const box = $('#mutNow');
   $('#mutDot').hidden = !mutiny;
@@ -949,81 +668,84 @@ function renderMutiny() {
       box.innerHTML = `
         <div class="mut">
           <div class="mut-h"><span class="flag" style="--c:${c.color}"></span><span class="tk" style="--c:${c.color}">$${esc(c.sym)}</span><span class="pill k-mut">VOTE OPEN</span><time id="mTime" class="num"></time></div>
-          <p>${esc(c.name)} is at <b class="loss" id="mDd"></b> since its deposit. Its mutiny line is ${MINUS}${Math.abs(c.mutinyAt)}%. Holders vote with their coins. If "Drop anchor" wins, it opens no new trades for 6 hours.</p>
+          <p>${esc(c.name)} is at <b class="loss" id="mDd"></b> since launch. Its mutiny line is ${MINUS}${Math.abs(c.mutinyAt)}%. Everyone in the cove gets one vote. If "Drop anchor" wins, it opens no new trades for 2 hours.</p>
           <div><div class="vrow"><span>Drop anchor</span><b id="mA"></b></div><div class="vbar"><i id="mAb" style="background:var(--loss)"></i></div></div>
           <div><div class="vrow"><span>Keep sailing</span><b id="mK"></b></div><div class="vbar"><i id="mKb" style="background:var(--sky)"></i></div></div>
           <div class="vbtns"><button class="btn" type="button" data-vote="anchor">Vote: drop anchor</button><button class="btn" type="button" data-vote="keep">Vote: keep sailing</button></div>
-          <p class="fine" id="mFine">Your demo bag: 1.2M $${esc(c.sym)}, 3% of supply. The owner can overrule a passed vote by paying 0.1 SOL into the Lighthouse. Votes run 6 hours, 75 seconds in this demo.</p>
+          <p class="fine" id="mFine">The ship's own crew votes too. The owner can overrule a passed vote with a 0.1 SOL bribe into the Lighthouse.</p>
         </div>`;
       mutBuilt = m.id;
-      $$('[data-vote]', box).forEach(b => b.addEventListener('click', () => {
-        if (!mutiny || mutiny.voted) return;
-        const side = b.dataset.vote;
-        mutiny[side] += (mutiny.anchor + mutiny.keep) * 0.06;
-        mutiny.voted = side;
-        toast(`Your demo vote is in: 1.2M $${mutiny.cap.sym} for ${side === 'anchor' ? 'Drop anchor' : 'Keep sailing'}.`);
-        renderMutiny();
+      $$('[data-vote]', box).forEach(b => b.addEventListener('click', async () => {
+        $$('[data-vote]', box).forEach(x => { x.disabled = true; });
+        try { const r = await api('/api/action', { type: 'vote', side: b.dataset.vote }); sync(r.state); toast(`Your vote is in: ${b.dataset.vote === 'anchor' ? 'drop anchor' : 'keep sailing'}.`); }
+        catch (err) { toast(err.message); renderMutiny(); }
       }));
     }
     const a = Math.round(m.anchor / (m.anchor + m.keep) * 100);
-    $('#mTime').textContent = mmss(m.ends - Date.now());
+    $('#mTime').textContent = mmss(m.ends - now());
     $('#mDd').textContent = pct(ddPct(c));
     $('#mA').textContent = a + '%'; $('#mK').textContent = (100 - a) + '%';
     $('#mAb').style.width = a + '%'; $('#mKb').style.width = (100 - a) + '%';
     $$('[data-vote]', box).forEach(b => { b.disabled = !!m.voted; });
-    if (m.voted) $('#mFine').textContent = `You voted ${m.voted === 'anchor' ? 'Drop anchor' : 'Keep sailing'} with 1.2M $${c.sym}. Result when the clock hits zero.`;
+    $('#mFine').textContent = m.voted
+      ? `You voted ${m.voted === 'anchor' ? 'drop anchor' : 'keep sailing'}. ${m.crew} ${m.crew === 1 ? 'player has' : 'players have'} voted. Result when the clock hits zero.`
+      : `${m.crew} ${m.crew === 1 ? 'player has' : 'players have'} voted so far. The ship's own crew votes too. The owner can overrule a passed vote with a 0.1 SOL bribe.`;
   }
-  if (histCount !== mutinyHistory.length) {
-    histCount = mutinyHistory.length;
-    $('#mutHist').innerHTML = mutinyHistory.map(h => `<li><span class="flag" style="--c:${h.color}"></span><span class="tk" style="--c:${h.color}">$${esc(h.sym)}</span><span>${h.result}, ${h.a}% for the anchor</span><time>${ago(h.t)}</time></li>`).join('');
+  const hk = mutinyHistory.map(h => h.t).join();
+  if (hk !== histKey) {
+    histKey = hk;
+    $('#mutHist').innerHTML = mutinyHistory.map(h => `<li><span class="flag" style="--c:${h.color}"></span><span class="tk" style="--c:${h.color}">$${esc(h.sym)}</span><span>${h.result}, ${h.a}% for the anchor</span><time>${ago(h.t)}</time></li>`).join('') || '<li class="empty">No mutinies yet.</li>';
   }
 }
 function renderFleets() {
   const pane = $('#pane-fleets');
   if (pane.contains(document.activeElement) && document.activeElement !== pane) return;
-  const stats = FLEETS.map((f, i) => { const mem = alive().filter(c => c.fleet === i); return { f, mem, week: f.week + mem.reduce((s, c) => s + c.realized, 0) }; });
-  const top = stats.reduce((a, b) => b.week > a.week ? b : a);
+  const stats = FLEETS.map((f, i) => ({ f, mem: alive().filter(c => c.fleet === i), week: f.week }));
+  const top = stats.reduce((a, b) => (!a || b.week > a.week) ? b : a, null);
   $('#fleetList').innerHTML = stats.map(s => `
     <div class="fleet">
-      <div class="fl-h"><span class="flag" style="--c:${s.f.color}"></span><b>${s.f.name}</b>${s === top ? '<span class="bf">LEADS THE WEEK</span>' : ''}</div>
+      <div class="fl-h"><span class="flag" style="--c:${s.f.color}"></span><b>${s.f.name}</b>${s === top && s.week > 0 ? '<span class="bf">LEADS THE WEEK</span>' : S && S.flagHolder === s.f.name ? '<span class="bf">BLACK FLAG</span>' : ''}</div>
       <div class="members">${s.mem.map(c => `<button class="mem" type="button" style="--c:${c.color}" data-cap="${c.id}">$${esc(c.sym)}</button>`).join('') || '<span class="muted">No captains</span>'}</div>
       <div class="fl-s"><span>Week PnL <b class="${s.week >= 0 ? 'gain' : 'loss'}">${sgn(s.week)} SOL</b></span><span>${s.mem.length}/5 ships</span></div>
     </div>`).join('');
   $('#flagChest').textContent = sol(flagChest) + ' SOL';
   const ranked = alive().sort((a, b) => renown(b) - renown(a));
-  $('#lb').innerHTML = ranked.map((c, i) => `<li><button type="button" data-cap="${c.id}" style="--c:${c.color}"><span class="pos">${i + 1}</span><span class="nm"><span class="tk">$${esc(c.sym)}</span><span class="rk">${RANKS[rankOf(c)].name}${c.mine ? ' · yours' : ''}</span></span><span class="num">${sol(renown(c))} SOL</span></button></li>`).join('');
+  $('#lb').innerHTML = ranked.map((c, i) => `<li><button type="button" data-cap="${c.id}" style="--c:${c.color}"><span class="pos">${i + 1}</span><span class="nm"><span class="tk">$${esc(c.sym)}</span><span class="rk">${RANKS[rankOf(c)].name} · ${c.mine ? 'yours' : esc(c.owner)}</span></span><span class="num">${sol(renown(c))} SOL</span></button></li>`).join('');
 }
 function renderWrecks(hl) {
-  $('#wreckList').innerHTML = wrecks.map(wk => `<li class="wreck${wk === hl ? ' hl' : ''}"><div class="ev-h"><span class="tk" style="--c:#a8b0c0">† $${esc(wk.sym)}</span><span class="pill k-mut">${pct(wk.dd)}</span><time>sank ${ago(wk.when)} ago</time></div><blockquote>“${esc(wk.last)}”</blockquote></li>`).join('');
+  $('#wreckList').innerHTML = wrecks.map(wk => `<li class="wreck${hl && wk.sym === hl.sym ? ' hl' : ''}"><div class="ev-h"><span class="tk" style="--c:#a8b0c0">† $${esc(wk.sym)}</span><span class="pill k-mut">${pct(wk.dd)}</span><time>sank ${ago(wk.when)} ago</time></div><blockquote>“${esc(wk.last)}”</blockquote></li>`).join('') || '<li class="empty">No wrecks yet. Every captain is still afloat.</li>';
 }
 function renderBoard() {
   const holders = {};
-  caps.forEach(c => c.pos.forEach(p => { (holders[p.sym] = holders[p.sym] || []).push(c); }));
-  $('#boardBody').innerHTML = [...market].sort((a, b) => b.vol - a.vol).map(t => {
-    const hs = holders[t.sym] || [];
-    return `<tr><td>$${t.sym}${t.age < 3 ? '<span class="new">NEW</span>' : ''}</td><td>${price(t.price)}</td><td><span class="chg ${t.ch >= 0 ? 'gain' : 'loss'}"><i style="width:${Math.round(Math.min(40, Math.abs(t.ch) * 1.2))}px"></i>${pct(t.ch)}</span></td><td>${usd(t.vol * 1e6)}</td><td>${usd(t.liq * 1000)}</td><td>${ageShort(t.age)}</td><td class="held">${hs.map(c => `<span class="flag" style="--c:${c.color}" title="$${esc(c.sym)}"></span>`).join('') || '<span class="muted">none</span>'}</td></tr>`;
-  }).join('');
+  caps.forEach(c => c.pos.forEach(p => { (holders[p.id] = holders[p.id] || []).push(c); }));
+  $('#boardBody').innerHTML = board.slice().sort((a, b) => b.vol - a.vol).map(t => {
+    const hs = holders[t.id] || [];
+    return `<tr><td><a href="${esc(t.url)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">$${esc(t.sym)}</a>${t.age < 3 ? '<span class="new">NEW</span>' : ''}</td><td>${price(t.price)}</td><td><span class="chg ${t.ch >= 0 ? 'gain' : 'loss'}"><i style="width:${Math.round(Math.min(40, Math.abs(t.ch) * 1.2))}px"></i>${pct(t.ch)}</span></td><td>${usd(t.vol)}</td><td>${t.liq ? usd(t.liq) : '—'}</td><td>${ageShort(t.age)}</td><td class="held">${hs.map(c => `<span class="flag" style="--c:${c.color}" title="$${esc(c.sym)}"></span>`).join('') || '<span class="muted">none</span>'}</td></tr>`;
+  }).join('') || '<tr><td colspan="7" class="muted" style="font-family:var(--f-body)">Reading the board from DexScreener…</td></tr>';
+  const age = S && S.marketAt ? Math.round((now() - S.marketAt) / 1000) : null;
+  set('#boardAge', age == null ? 'Live Solana coins from DexScreener' : `Live Solana coins from DexScreener, read ${age < 60 ? age + 's' : Math.round(age / 60) + 'm'} ago`);
 }
 function set(sel, v) { const el = $(sel); if (el && el.textContent !== String(v)) el.textContent = v; }
 function renderStats() {
   const list = alive(), w = weather(), idx = boardIndex();
   const atSea = list.filter(c => !c.docked).length;
-  const tph = tradeTimes.filter(t => t > Date.now() - 3600e3).length;
+  const tph = S ? S.trades1h : 0;
   const pnl = list.reduce((s, c) => s + c.realized, 0);
   set('#stSea', `${atSea}/${list.length}`);
   set('#stTph', tph);
   const pe = $('#stPnl'); pe.textContent = sgn(pnl) + ' SOL'; pe.className = 'v ' + (pnl >= 0 ? 'gain' : 'loss');
   set('#stPot', sol(pot) + ' SOL');
-  set('#stBurn', `burns $COVE in ${mmss(nextBurn - Date.now())}`);
+  set('#stBurn', `fires in ${mmss(nextBurn - now())}`);
   set('#stLocker', sol(locker) + ' SOL');
   set('#stBerth', `${BERTHS - list.length}/${BERTHS}`);
   set('#hdrSea', atSea); set('#hdrTph', tph); set('#hdrPot', sol(pot) + ' SOL');
   $('#seaChip').dataset.w = w; set('#seaLabel', WNAME[w]); set('#seaIdx', pct(idx));
-  $('#seaText').innerHTML = `Sea state: <b>${WNAME[w]}</b>${forced !== 'auto' ? ' (preview)' : ''}. The board's average coin is <b>${pct(idx)}</b> this hour. Fair winds above +4%, choppy down to ${MINUS}3%, storm down to ${MINUS}10%, kraken below that.`;
+  const next = S ? Math.max(0, Math.ceil((S.nextTick - now()) / 1000)) : 0;
+  $('#seaText').innerHTML = `Sea state: <b>${WNAME[w]}</b>${forced !== 'auto' ? ' (preview)' : ''}. The average coin on the board is <b>${pct(idx)}</b> this hour. Captains decide again in <b>${next}s</b>.`;
 }
 function buildTicker() {
-  const items = events.slice(0, 16).map(e => {
-    const c = e.cap, col = c ? c.color : '#e7b75a', nm = c ? '$' + c.sym : 'LIGHTHOUSE';
+  const items = events.filter(e => e.kind !== 'wait').slice(0, 16).map(e => {
+    const c = e.cap, col = c ? c.color : e.color || '#e7b75a', nm = c ? '$' + c.sym : e.sym ? '$' + e.sym : 'LIGHTHOUSE';
     let body;
     if (e.kind === 'buy') body = `bought $${esc(e.coin)} <span class="num">${sol(e.amt)} SOL</span>`;
     else if (e.kind === 'sell') body = `sold $${esc(e.coin)} <span class="num ${e.amt >= 0 ? 'gain' : 'loss'}">${sgn(e.amt)} SOL</span>`;
@@ -1035,6 +757,12 @@ function buildTicker() {
 function renderRanks() {
   $('#ranks').innerHTML = RANKS.map((r, i) => `<li><canvas width="48" height="32" data-rk="${i}" aria-hidden="true"></canvas><b>${r.name}</b><span>${r.min} SOL</span></li>`).join('');
   $$('#ranks canvas').forEach(cn => drawMini(cn, +cn.dataset.rk, '#ff8a5b'));
+}
+let tickerAt = 0;
+function renderAll() {
+  renderLog(); renderTavern(); renderMutiny(); renderWrecks(); renderBoard(); renderStats(); renderSpot(); updateCard();
+  if (!$('#pane-fleets').hidden) renderFleets();
+  if (Date.now() - tickerAt > 20000) { buildTicker(); tickerAt = Date.now(); }
 }
 
 /* ---------------- tabs, filters, weather preview ---------------- */
@@ -1056,12 +784,12 @@ $$('.tab').forEach(t => {
 });
 $$('[data-f]').forEach(b => b.addEventListener('click', () => { logFilter = b.dataset.f; $$('[data-f]').forEach(x => x.setAttribute('aria-pressed', x === b)); renderLog(); }));
 $$('.seg [data-w]').forEach(b => b.addEventListener('click', () => { forced = b.dataset.w; $$('.seg [data-w]').forEach(x => x.setAttribute('aria-pressed', x === b)); renderStats(); }));
-$('#pane-fleets').addEventListener('click', e => { const b = e.target.closest('[data-cap]'); if (b) selectCap(caps.find(c => c.id === +b.dataset.cap)); });
+$('#pane-fleets').addEventListener('click', e => { const b = e.target.closest('[data-cap]'); if (b) selectCap(byId(b.dataset.cap)); });
 
 /* ---------------- dialogs ---------------- */
 const toastEl = $('#toast');
 let toastTimer = 0;
-function toast(msg) { toastEl.textContent = msg; toastEl.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { toastEl.hidden = true; }, 3200); }
+function toast(msg) { toastEl.textContent = msg; toastEl.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { toastEl.hidden = true; }, 3600); }
 function openDlg(id) { const d = $('#' + id); if (d.showModal) { if (!d.open) d.showModal(); } else d.setAttribute('open', ''); }
 $$('dialog.dlg').forEach(d => {
   d.addEventListener('click', e => { if (e.target === d) d.close(); });
@@ -1070,30 +798,30 @@ $$('dialog.dlg').forEach(d => {
 
 /* ---------------- the harbormaster ---------------- */
 const HM = [
-  { name: 'Getting started', intro: "Welcome to the cove, sailor. Every ship out there is an AI captain trading SOL for its owner, and every move goes in the log. Ask me anything.", qa: [
-    ['How do I get a captain?', 'Sign the articles: pick a hull, a strategy, a job and a mutiny line. That part is free and needs no wallet. Then you fund it with 0.2 to 10 SOL in its own wallet, and it sails.'],
-    ['Do I have to watch it all day?', 'No. Your captain trades around the clock by your rules. Come back when you like and read its log: every buy, every sell and every pass has a reason next to it.'],
-    ['Can I get my SOL back?', 'Any time. Withdraw, pause or change the rules with one free signed message. Withdrawals only ever go to your own wallet.'],
+  { name: 'Getting started', intro: 'Welcome to the cove, sailor. Every ship out there is an AI captain trading real Solana memecoins off the live board, and every move goes in the log. Ask me anything.', qa: [
+    ['How do I get a captain?', 'Sign the articles: your name, a captain name and ticker, a hull, a strategy, a job, a mutiny line and a starting hold between 0.2 and 10 SOL. You can run up to 3 captains.'],
+    ['Do I have to watch it all day?', 'No. Captains decide once a minute while the harbor is open, and they pick up where they left off when anyone comes back. Read the log any time: every buy, sell and pass has a reason.'],
+    ['How does the harbor know a captain is mine?', "Your browser keeps a private key for you. Use the same browser to give orders. If you clear your browser data, your captains keep sailing but you can't command them anymore."],
   ] },
   { name: 'Your captain', intro: 'A captain is a strategy, a job and a temper. Here is what each part does.', qa: [
-    ['What do the strategies do?', 'Privateers chase momentum. Smugglers buy deep dips that still have depth. Merchants take calm routes. Explorers try pairs younger than 3 hours. Parrots copy the best captain in their fleet. Or set your own sliders.'],
-    ['What is a job?', "A share of your captain's fee income pays its job. A Cannoneer buys back its coin and burns it. A Quartermaster pays its holders. A Cartographer shows holders its moves 60 seconds before the public log."],
-    ['Can I give it orders?', "Yes. Open your captain's card and give an order: play it safe, take profits early, or return to port. It writes the order in its log and follows it from the next decision."],
+    ['What do the strategies do?', 'Privateers chase coins up 8% in the hour with real volume. Smugglers buy dips deeper than 10% that still have liquidity. Merchants take calm routes with deep pools. Explorers buy pairs younger than 3 hours. Parrots copy the best captain in their fleet.'],
+    ['What is a job?', "A share of your captain's fee income pays its job. A Cannoneer burns it, which adds to renown. A Quartermaster pays it out to the crew. A Cartographer funds the map room, half of which counts as renown."],
+    ['Can I give it orders?', "Yes. Open your captain's card: play it safe, take profits early, return to port, or retire it for good. It writes the order in its log and follows it from its next decision."],
     ['How does the ship grow?', 'Renown is trading profit plus value burned. Raft at 0, Sloop at 0.1, Brig at 0.5, Frigate at 2 and Galleon at 10 SOL. Ships never downgrade, but they can sink.'],
   ] },
   { name: 'The sea', intro: "Look outside. The weather isn't decoration. It's the market.", qa: [
-    ['Why does the weather change?', 'The sea follows the board the captains read. Fair winds when coins climb, a choppy sea when they drift, a storm when they bleed, and the kraken when the board drops more than 10% in an hour.'],
-    ['Do captains care about the weather?', 'They do. In a storm they trade smaller. When the kraken shows up, most of them stop opening trades until it dives.'],
-    ['What are the wrecks on the seabed?', 'Captains that lost 90% of their hold. What was left went back to the owner. The wreck stays with its last log line, so nobody forgets.'],
+    ['Why does the weather change?', 'The sea follows the board. Fair winds when the average coin is up more than 4% this hour, choppy down to −3%, a storm down to −10%, and the kraken below that.'],
+    ['Do captains care about the weather?', 'They do. In a storm they trade smaller. When the kraken shows up most of them stop opening trades until it dives.'],
+    ['What are the wrecks on the seabed?', 'Captains that lost 90% of their hold. The wreck stays with its last log line, so nobody forgets.'],
   ] },
-  { name: 'Crew and fleets', intro: "Captains answer to their owners, their crews and their fleets. In that order, mostly.", qa: [
-    ['What is a mutiny?', "Every captain has a mutiny line. Fall past it and its holders vote with their coins. If 'Drop anchor' wins, the captain opens no new trades for 6 hours."],
+  { name: 'Crew and fleets', intro: 'Captains answer to their owners, their crews and their fleets. In that order, mostly.', qa: [
+    ['What is a mutiny?', "Every captain has a mutiny line. Fall past it and a 15-minute vote opens. Everyone in the cove gets one vote, and the ship's own crew votes too. If 'Drop anchor' wins, the captain opens no new trades for 2 hours."],
     ['Can the owner stop a mutiny?', 'With a 0.1 SOL bribe into the Lighthouse, yes. Or pick Iron rule at launch: no mutinies ever, but a 15% loot tax instead of 10%.'],
-    ['What do fleets do?', 'Up to 5 captains sail together. The top fleet each week flies the Black Flag and splits the chest. Ten percent of creator fees fill it.'],
+    ['What do fleets do?', 'Up to 5 captains sail together and Parrots copy the best one. The fleet with the best week flies the Black Flag and splits the chest.'],
   ] },
   { name: 'The Lighthouse', intro: 'The Lighthouse keeps the harbor honest. It takes a cut and burns it.', qa: [
-    ['What does the Lighthouse do?', 'It collects 20% of creator fees, the loot tax and every bribe. Every hour it fires and burns $COVE into Davy Jones\' Locker.'],
-    ['Who is Captain of the Hour?', 'The busiest captain of the hour. It gets a bonus burn of its own coin: 10% of the pot, up to 0.1 SOL.'],
+    ['What does the Lighthouse do?', "It collects the loot tax, a share of every trade and every bribe. Once an hour it fires and burns a fifth of the pot into Davy Jones' Locker."],
+    ['Who is Captain of the Hour?', 'The captain with the most trades that hour. It gets a bonus burn worth 10% of the pot, up to 0.1 SOL, which counts toward its renown.'],
     ['What is the loot tax?', "10% of every winning trade's profit goes to the Lighthouse. Losing trades pay nothing."],
   ] },
 ];
@@ -1133,10 +861,12 @@ function builderPreview() {
   $('#bShareOut').textContent = $('#bShare').value + '%';
   $('#bTpOut').textContent = '+' + $('#bTp').value + '%';
   $('#bSlOut').textContent = MINUS + $('#bSl').value + '%';
+  $('#bDepOut').textContent = (+$('#bDep').value).toFixed(1) + ' SOL';
 }
 function openBuilder(strat) {
   if (strat) { const r = $('#bs-' + strat); if (r) r.checked = true; }
   $('#bErr').textContent = '';
+  if (!$('#bPlayer').value) $('#bPlayer').value = storageGet('cove.player') || '';
   builderPreview();
   openDlg('builder');
 }
@@ -1146,68 +876,48 @@ $$('[data-open]').forEach(b => b.addEventListener('click', () => {
   if (b.dataset.open === 'builder') openBuilder(b.dataset.strat);
   else { openDlg(b.dataset.open); if (b.dataset.open === 'how') hmTopic(0); }
 }));
-bForm.addEventListener('submit', e => {
+bForm.addEventListener('submit', async e => {
   e.preventDefault();
   const err = m => { $('#bErr').textContent = m; };
-  const name = $('#bName').value.trim();
-  const sym = $('#bSym').value.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
-  if (!name) return err('Give your captain a name.');
-  if (sym.length < 2) return err('Tickers need 2 to 8 letters or digits.');
-  if (caps.some(c => c.sym === sym) || market.some(t => t.sym === sym) || wrecks.some(w => w.sym === sym) || sym === 'COVE') return err(`$${sym} is already taken in the cove. Pick another ticker.`);
-  if (alive().length >= BERTHS) return err('All 24 berths are taken. Try again when a captain retires.');
-  const strat = bVal('bStrat'), line = $('#bLine').value, fleet = +$('#bFleet').value;
-  if (fleet >= 0 && alive().filter(c => c.fleet === fleet).length >= 5) return err(`${FLEETS[fleet].name} already has 5 ships. Pick another fleet.`);
-  if (strat === 'parrot' && fleet < 0) return err('A Parrot needs a fleet to copy. Pick a fleet.');
-  const c = makeCap({
-    sym, name, owner: 'you', color: bVal('bColor'), strat, job: bVal('bJob'), fleet, slots: 3, deposit: 0.5, cash: 0.5,
-    share: +$('#bShare').value, mutinyAt: line === 'iron' ? 'iron' : +line, mine: true,
-    tp: strat === 'custom' ? +$('#bTp').value : null, sl: strat === 'custom' ? -$('#bSl').value : null,
-  });
-  c.x = -24; c.dir = 1;
-  caps.push(c);
-  layout();
-  log(c, 'launch', `${name} signed the articles. $${sym} launched on paper with 0.5 SOL. Sailing in to berth ${alive().length} of ${BERTHS}.`);
-  $('#builder').close();
-  bForm.reset();
-  selectCap(c);
-  spotCap = c; renderSpot();
-  toast(`$${sym} is sailing into the cove. Give it orders from its card.`);
-  setTimeout(() => decide(c), 2500);
-  renderStats(); renderFleets(); buildTicker();
+  const player = $('#bPlayer').value.trim();
+  if (!player) return err('Tell the harbor your name so friends know whose captain it is.');
+  storageSet('cove.player', player);
+  const submit = bForm.querySelector('[type=submit]');
+  submit.disabled = true;
+  try {
+    const r = await api('/api/action', {
+      type: 'launch', player, name: $('#bName').value, sym: $('#bSym').value, color: bVal('bColor'), strat: bVal('bStrat'), job: bVal('bJob'),
+      fleet: $('#bFleet').value, line: $('#bLine').value, share: $('#bShare').value, deposit: $('#bDep').value, tp: $('#bTp').value, sl: $('#bSl').value,
+    });
+    sync(r.state);
+    $('#builder').close();
+    const keepName = player;
+    bForm.reset();
+    $('#bPlayer').value = keepName;
+    const c = byId(r.id);
+    if (c) { selectCap(c); spotCap = c; renderSpot(); toast(`$${c.sym} is sailing into the cove. It makes its first decision within a minute.`); }
+  } catch (ex) { err(ex.message); }
+  finally { submit.disabled = false; }
 });
 
 /* ---------------- boot ---------------- */
-layout();
-caps.forEach(c => { c.x = c.ax; });
-startMutiny(caps.find(c => c.sym === 'PEGLEG'), { anchor: 31, keep: 26, dur: 70e3 });
-for (let i = 0; i < 12; i++) decide(pick(alive()));
-for (let i = 0; i < 4; i++) banter(true);
-(() => {
-  let tt = Date.now();
-  events.forEach(e => { tt -= rnd(9, 28) * 1000; e.t = tt; });
-  tt = Date.now();
-  tavern.forEach(th => { tt -= rnd(40, 140) * 1000; th.t = tt; });
-})();
-tavernBubble = 0;
-booted = true;
-spotCap = alive().find(c => !c.docked) || caps[0];
-renderLog(); renderTavern(); renderMutiny(); renderFleets(); renderWrecks(); renderBoard(); renderRanks(); renderStats(); renderSpot(); buildTicker(); builderPreview();
+renderRanks();
+builderPreview();
 requestAnimationFrame(frame);
-
-setInterval(marketTick, 1500);
-setInterval(() => { const list = alive(); if (list.length) decide(pick(list)); layout(); }, 2300);
-setInterval(mutinyTick, 1000);
-setInterval(() => {
-  const now = Date.now();
-  if (now >= nextBurn) lighthouse();
-  for (const c of caps) if (c.crewAnchor && c.pauseEnds && now > c.pauseEnds) { c.paused = c.ownerPause; c.crewAnchor = false; c.pauseEnds = 0; log(c, 'sail', 'Anchor time is up: 6 hours, 2.5 minutes in this demo. Sails up.'); layout(); }
-  while (pendingMoments.length) { const m = pendingMoments.shift(); if (caps.includes(m.c)) log(m.c, 'moment', m.text); }
-  renderStats();
-  renderSpot();
-  updateCard();
-}, 1000);
+let failures = 0;
+async function poll() {
+  try {
+    sync(await api('/api/state'));
+    failures = 0;
+    $('#offline').hidden = true;
+  } catch (err) {
+    failures++;
+    if (failures >= 2) { $('#offline').hidden = false; set('#offlineText', err.message); }
+  }
+  setTimeout(poll, document.hidden ? 20000 : 5000);
+}
+poll();
+document.addEventListener('visibilitychange', () => { if (!document.hidden) api('/api/state').then(sync).catch(() => {}); });
+setInterval(() => { if (S) { renderStats(); renderSpot(); updateCard(); if (mutiny) renderMutiny(); } }, 1000);
 setInterval(rotateSpot, 9000);
-setInterval(() => banter(false), 9000);
-setInterval(() => { renderLog(); renderTavern(); if (!$('#pane-fleets').hidden) renderFleets(); }, 8000);
-setInterval(buildTicker, 20000);
 })();

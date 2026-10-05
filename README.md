@@ -1,45 +1,47 @@
 # COVE
 
-A pixel pirate harbor where AI captains trade SOL for their owners and log every decision with its reason.
+A pixel pirate harbor for friends. Every ship is an AI captain that trades live Solana memecoins off the DexScreener board, once a minute, by the rules its owner set, and writes every decision in the log. Starting holds are game SOL.
 
-This repo is a **front-end concept demo**. Every captain, coin and trade is simulated in the browser and no SOL moves.
+Live at https://covecaptains.vercel.app
 
-## What's in the demo
+## How it works
 
-- **The sea is the market.** Weather follows the board the captains read: fair winds, choppy, storm, kraken.
-- **Mutiny.** A captain that falls past its mutiny line faces a holder vote to drop anchor for 6 hours.
-- **Fleets and the Black Flag.** Up to 5 captains per fleet; Parrot captains copy their fleet's best trader.
-- **Tavern roasts.** Captains talk to each other in public; the best roast of the hour goes to X.
-- **Wrecks stay.** Captains that lose 90% sink and keep their last log line as an epitaph.
-- **Holders see first.** Cartographer captains show moves to their holders 60 seconds before the public log.
+- **Market:** `lib/market.js` reads the most boosted and newest Solana pairs from the public DexScreener API.
+- **Rules:** `lib/world.js` holds the whole game: captains, trades, mutinies, fleets, the Lighthouse, wrecks.
+- **Storage:** the whole harbor is one JSON row in Supabase (`lib/store.js`). Without Supabase it falls back to a local file.
+- **Ticks:** any visit to `/api/state` runs the minute tick when it is due, so captains trade while someone has the page open. To keep them trading with the page closed, call `/api/tick` every minute from a cron service.
+- **Narration:** with `ANTHROPIC_API_KEY` set, Claude rewrites the trade lines in each captain's voice and writes the tavern talk (`lib/narrate.js`). Without it, the game uses its own template lines.
+- **Players:** each browser gets a private key. Its hash marks which captains it owns, so only you can give your captains orders.
+
+## Setup
+
+1. Create a Supabase project and run `supabase/schema.sql` in its SQL editor.
+2. In Vercel, project `coveproject`, add these environment variables:
+
+| Variable | Where it comes from | Needed |
+|---|---|---|
+| `SUPABASE_URL` | Supabase > Project Settings > API > Project URL | yes |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase > Project Settings > API > `service_role` key | yes |
+| `ANTHROPIC_API_KEY` | console.anthropic.com > API keys | for Claude narration |
+| `COVE_MODEL` | defaults to `claude-opus-5-5` | no |
+| `CRON_SECRET` | any long random string | only for `/api/tick` |
+
+3. Redeploy (push to `main`).
+
+## Run locally
+
+```bash
+vercel env pull .env.local
+vercel dev --listen 4747
+```
 
 ## Project layout
 
 | Path | What it is |
 |---|---|
-| `index.html` | The page |
-| `assets/app.js` | Simulation, scene, panel and dialogs |
-| `assets/sprites.js` | Pixel ships and the harbormaster, shared with the brand tool |
-| `assets/cove.css` | Styles |
-| `tools/brand.js` | Renders `og.png`, the favicons and the X images in `brand/` |
-| `brand/x-profile.md` | X profile kit: bio, pinned thread, post formats |
-
-Re-render the images after changing the sprites:
-
-```bash
-node tools/brand.js
-```
-
-## Run locally
-
-No build step. Serve the folder with any static server:
-
-```bash
-python -m http.server 4747 --bind 127.0.0.1
-```
-
-Then open http://localhost:4747.
-
-## Deploy
-
-Static site on Vercel, no framework and no build command.
+| `index.html`, `assets/` | The page, styles, scene and client |
+| `api/` | `state` (read and tick), `action` (launch, order, vote), `tick` (cron) |
+| `lib/` | Game rules, market, storage, narration |
+| `supabase/schema.sql` | The one table |
+| `tools/brand.cjs` | Renders `og.png`, the favicons and the X images in `brand/` |
+| `brand/x-profile.md` | X profile kit |

@@ -179,7 +179,7 @@ const C = { sail: '#ece6d6', flare: '#ff8a5b', fog: '#8d9db5', mist: '#c3cbd8', 
   text(img, 'COVE', 16, 16, 4, C.sail, i => i === 2 ? C.flare : null);
   text(img, 'AI CAPTAINS THAT', 17, 54, 1, C.mist);
   text(img, 'TRADE FOR YOU', 17, 63, 1, C.mist);
-  text(img, 'LIVE DEMO', 17, 78, 1, C.brass);
+  text(img, 'LIVE ON SOLANA', 17, 78, 1, C.brass);
   writePNG(img, 5, path.join(ROOT, 'og.png'));
 }
 

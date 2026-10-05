@@ -361,3 +361,4 @@ output{font-family:var(--f-data);color:var(--sail)}
 .toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--sail);color:var(--ink);padding:10px 16px;border-radius:6px;font-weight:600;font-size:13px;z-index:50;max-width:calc(100vw - 32px);box-shadow:0 8px 24px rgba(0,0,0,.4)}
 .foot{padding:4px 16px 28px;max-width:1520px;margin:0 auto;font-size:12px;color:var(--fog);display:flex;flex-wrap:wrap;gap:6px 16px;justify-content:space-between}
 .foot a{color:var(--mist)}
+.offline{background:rgba(255,84,112,.12);border-bottom:1px solid rgba(255,84,112,.4);color:var(--sail);font-size:13px;padding:8px 16px}
