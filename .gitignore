@@ -1,0 +1,12 @@
+# local tooling
+.claude/
+.vercel/
+
+# secrets
+.env
+.env.*
+
+# deps and OS junk
+node_modules/
+.DS_Store
+Thumbs.db
