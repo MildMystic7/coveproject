@@ -44,4 +44,5 @@ vercel dev --listen 4747
 | `lib/` | Game rules, market, storage, narration |
 | `supabase/schema.sql` | The one table |
 | `tools/brand.cjs` | Renders `og.png`, the favicons and the X images in `brand/` |
+| `tools/promo/` | Studio that renders the 15-second launch video to `brand/cove-promo.mp4` |
 | `brand/x-profile.md` | X profile kit |

@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>COVE promo studio</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:ital,wght@0,500;0,600;0,700;1,500&family=JetBrains+Mono:wght@500;700&family=Pixelify+Sans:wght@500;700&display=swap">
+<style>
+  :root { color-scheme: dark; --ink: #0a1322; --rope: #24385a; --sail: #ece6d6; --fog: #8a9ab3; --flare: #ff8a5b; }
+  body { margin: 0; background: var(--ink); color: var(--sail); font: 14px/1.5 "Figtree", system-ui, sans-serif; padding: 16px; display: grid; gap: 12px; }
+  canvas { width: 100%; max-width: 1280px; height: auto; aspect-ratio: 16 / 9; border: 1px solid var(--rope); background: #000; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  button { background: var(--flare); color: #2a1206; border: 0; border-radius: 6px; padding: 8px 14px; font-weight: 700; cursor: pointer; }
+  button.ghost { background: transparent; color: var(--sail); border: 1px solid var(--rope); }
+  input[type=range] { width: min(600px, 100%); accent-color: var(--flare); }
+  #status { color: var(--fog); font-family: "JetBrains Mono", monospace; }
+</style>
+</head>
+<body>
+  <canvas id="out" width="1920" height="1080"></canvas>
+  <div class="row">
+    <button class="ghost" id="play" type="button">Play</button>
+    <input type="range" id="scrub" min="0" max="15" step="0.0333" value="0" aria-label="Time">
+    <span id="time">0.00s</span>
+    <button id="render" type="button">Render MP4</button>
+    <span id="status">Loading fonts…</span>
+  </div>
+  <script src="/assets/sprites.js"></script>
+  <script src="/node_modules/mp4-muxer/build/mp4-muxer.js"></script>
+  <script src="promo.js"></script>
+</body>
+</html>
